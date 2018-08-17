@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Google OR Tools
+Created on Fri Aug 16 14:50:14 2018
+
+@author: Kaushik
 """
 
 '''
@@ -77,7 +79,7 @@ def manhattan_distance(x1, y1, x2, y2):
     dist = abs(x1 - x2) + abs(y1 - y2)
     return dist
 
-# Create the distance matrix.
+# Create the distance matrix (symmetric).
 def create_distance_matrix(locations, distance_func):
     size = len(locations)
     dist_matrix = {}
@@ -157,7 +159,7 @@ if __name__ == "__main__":
 
     # Initialize parameters
     tsp_size = len(locations) # Number of cities.
-    num_vehicles = 3 # Number of routes (i.e. number of vehicles), which is 1 for a TSP
+    num_vehicles = 1 # Number of routes (i.e. number of vehicles), which is 1 for a TSP
     depot = 0 # Start and end node of the route
     
     # Solve using Google OR Tools
