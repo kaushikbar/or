@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Aug 17 16:15:45 2018
+Created on Fri Aug 17 16:39:22 2018
 
 @author: Kaushik
 """
@@ -13,14 +13,20 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 ###########################
 class Vehicle():
     """Stores the property of a vehicle"""
-    def __init__(self, capacity):
+    def __init__(self, capacity, speed):
         """Initializes the vehicle properties"""
         self._capacity = capacity
+        self._speed = speed
 
     @property
     def capacity(self):
         """Gets vehicle capacity"""
         return self._capacity
+
+    @property
+    def speed(self):
+        """Gets the average travel speed of a vehicle"""
+        return self._speed
 
 class CityBlock():
     """City block definition"""
@@ -36,12 +42,14 @@ class CityBlock():
 
 class DataProblem():
     """Stores the data for the problem"""
-    def __init__(self, num_vehicles, locations_in_block_unit, demands, capacity):
+    def __init__(self, num_vehicles, locations_in_block_unit, demands, capacity, speed, time_windows, time_per_demand_unit):
         """Initializes the data for the problem"""
-        self._vehicle = Vehicle(capacity)
+        self._vehicle = Vehicle(capacity, speed)
         self._num_vehicles = num_vehicles
         self._depot = 0
         self._demands = demands
+        self._time_windows = time_windows
+        self._time_per_demand_unit = time_per_demand_unit
 
         # locations in meters using the city block dimension
         city_block = CityBlock()
@@ -79,6 +87,16 @@ class DataProblem():
         """Gets demands at each location"""
         return self._demands
 
+    @property
+    def time_per_demand_unit(self):
+        """Gets the time (in min) to load a demand"""
+        return self._time_per_demand_unit
+
+    @property
+    def time_windows(self):
+        """Gets (start time, end time) for each locations"""
+        return self._time_windows
+
 #######################
 # Problem Constraints #
 #######################
@@ -87,7 +105,7 @@ def manhattan_distance(position_1, position_2):
     return (abs(position_1[0] - position_2[0]) +
             abs(position_1[1] - position_2[1]))
 
-class CreateDistanceEvaluator(object): # pylint: disable=too-few-public-methods
+class CreateDistanceEvaluator(object):
     """Creates callback to return distance between points."""
     def __init__(self, data):
         """Initializes the distance matrix."""
@@ -109,7 +127,7 @@ class CreateDistanceEvaluator(object): # pylint: disable=too-few-public-methods
         """Returns the manhattan distance between the two nodes"""
         return self._distances[from_node][to_node]
 
-class CreateDemandEvaluator(object): # pylint: disable=too-few-public-methods
+class CreateDemandEvaluator(object):
     """Creates callback to get demands at each location."""
     def __init__(self, data):
         """Initializes the demand array."""
@@ -129,6 +147,64 @@ def add_capacity_constraints(routing, data, demand_evaluator):
         data.vehicle.capacity, # vehicle maximum capacity
         True, # start cumul to zero
         capacity)
+
+class CreateTimeEvaluator(object):
+    """Creates callback to get total times between locations."""
+    @staticmethod
+    def service_time(data, node):
+        """Gets the service time for the specified location."""
+        return data.demands[node] * data.time_per_demand_unit
+
+    @staticmethod
+    def travel_time(data, from_node, to_node):
+        """Gets the travel times between two locations."""
+        if from_node == to_node:
+            travel_time = 0
+        else:
+            travel_time = manhattan_distance(
+                data.locations[from_node],
+                data.locations[to_node]) / data.vehicle.speed
+        return travel_time
+
+    def __init__(self, data):
+        """Initializes the total time matrix."""
+        self._total_time = {}
+        # precompute total time to have time callback in O(1)
+        for from_node in range(data.num_locations):
+            self._total_time[from_node] = {}
+            for to_node in range(data.num_locations):
+                if from_node == to_node:
+                    self._total_time[from_node][to_node] = 0
+                else:
+                    self._total_time[from_node][to_node] = int(
+                        self.service_time(data, from_node) +
+                        self.travel_time(data, from_node, to_node))
+
+    def time_evaluator(self, from_node, to_node):
+        """Returns the total time between the two nodes"""
+        return self._total_time[from_node][to_node]
+
+def add_time_window_constraints(routing, data, time_evaluator):
+    """Add Global Span constraint"""
+    time = "Time"
+    horizon = 120
+    routing.AddDimension(
+        time_evaluator,
+        horizon, # allow waiting time
+        horizon, # maximum time per vehicle
+        False, # don't force start cumul to zero since we are giving TW to start nodes
+        time)
+    time_dimension = routing.GetDimensionOrDie(time)
+    for location_idx, time_window in enumerate(data.time_windows):
+        if location_idx == 0:
+            continue
+        index = routing.NodeToIndex(location_idx)
+        time_dimension.CumulVar(index).SetRange(time_window[0], time_window[1])
+        routing.AddToAssignment(time_dimension.SlackVar(index))
+    for vehicle_id in range(data.num_vehicles):
+        index = routing.Start(vehicle_id)
+        time_dimension.CumulVar(index).SetRange(data.time_windows[0][0], data.time_windows[0][1])
+        routing.AddToAssignment(time_dimension.SlackVar(index))
 
 ###########
 # Printer #
@@ -159,12 +235,14 @@ class ConsolePrinter():
     def print(self):
         """Prints assignment on console"""
         # Inspect solution.
+        capacity_dimension = self.routing.GetDimensionOrDie('Capacity')
+        time_dimension = self.routing.GetDimensionOrDie('Time')
         total_dist = 0
+        total_time = 0
         for vehicle_id in range(self.data.num_vehicles):
             index = self.routing.Start(vehicle_id)
             plan_output = 'Route for vehicle {0}:\n'.format(vehicle_id)
             route_dist = 0
-            route_load = 0
             while not self.routing.IsEnd(index):
                 node_index = self.routing.IndexToNode(index)
                 next_node_index = self.routing.IndexToNode(
@@ -172,17 +250,37 @@ class ConsolePrinter():
                 route_dist += manhattan_distance(
                     self.data.locations[node_index],
                     self.data.locations[next_node_index])
-                route_load += self.data.demands[node_index]
-                plan_output += ' {0} Load({1}) -> '.format(node_index, route_load)
+                load_var = capacity_dimension.CumulVar(index)
+                route_load = self.assignment.Value(load_var)
+                time_var = time_dimension.CumulVar(index)
+                time_min = self.assignment.Min(time_var)
+                time_max = self.assignment.Max(time_var)
+                slack_var = time_dimension.SlackVar(index)
+                slack_min = self.assignment.Min(slack_var)
+                slack_max = self.assignment.Max(slack_var)
+                plan_output += ' {0} Load({1}) Time({2},{3}) Slack({4},{5}) ->'.format(
+                    node_index,
+                    route_load,
+                    time_min, time_max,
+                    slack_min, slack_max)
                 index = self.assignment.Value(self.routing.NextVar(index))
 
             node_index = self.routing.IndexToNode(index)
+            load_var = capacity_dimension.CumulVar(index)
+            route_load = self.assignment.Value(load_var)
+            time_var = time_dimension.CumulVar(index)
+            route_time = self.assignment.Value(time_var)
+            time_min = self.assignment.Min(time_var)
+            time_max = self.assignment.Max(time_var)
             total_dist += route_dist
-            plan_output += ' {0} Load({1})\n'.format(node_index, route_load)
+            total_time += route_time
+            plan_output += ' {0} Load({1}) Time({2},{3})\n'.format(node_index, route_load, time_min, time_max)
             plan_output += 'Distance of the route: {0}m\n'.format(route_dist)
             plan_output += 'Load of the route: {0}\n'.format(route_load)
+            plan_output += 'Time of the route: {0}min\n'.format(route_time)
             print(plan_output)
         print('Total Distance of all routes: {0}m'.format(total_dist))
+        print('Total Time of all routes: {0}min'.format(total_time))
 
 ########
 # Main #
@@ -215,9 +313,24 @@ def main():
              8, 8]
     # Capacity of each vehicle
     capacity = 15
-            
+    # Travel speed: 5km/h to convert in m/min
+    speed = 5 * 60 / 3.6
+    # Time windows at each location
+    time_windows = \
+            [(0, 0),
+             (75, 85), (75, 85), # 1, 2
+             (60, 70), (45, 55), # 3, 4
+             (0, 8), (50, 60), # 5, 6
+             (0, 10), (10, 20), # 7, 8
+             (0, 10), (75, 85), # 9, 10
+             (85, 95), (5, 15), # 11, 12
+             (15, 25), (10, 20), # 13, 14
+             (45, 55), (30, 40)] # 15, 16
+    # Time (in min) to load a demand
+    time_per_demand_unit = 5 # 5 minutes/unit
+    
     # Instantiate the data problem.
-    data = DataProblem(num_vehicles, locations_in_block_unit, demands, capacity)
+    data = DataProblem(num_vehicles, locations_in_block_unit, demands, capacity, speed, time_windows, time_per_demand_unit)
 
     # Create Routing Model
     routing = pywrapcp.RoutingModel(data.num_locations, data.num_vehicles, data.depot)
@@ -227,6 +340,9 @@ def main():
     # Add Capacity constraint
     demand_evaluator = CreateDemandEvaluator(data).demand_evaluator
     add_capacity_constraints(routing, data, demand_evaluator)
+    # Add Time Window constraint
+    time_evaluator = CreateTimeEvaluator(data).time_evaluator
+    add_time_window_constraints(routing, data, time_evaluator)
 
     # Setting first solution heuristic (cheapest addition).
     search_parameters = pywrapcp.RoutingModel.DefaultSearchParameters()
@@ -238,4 +354,4 @@ def main():
     printer.print()
 
 if __name__ == '__main__':
-  main()
+    main()

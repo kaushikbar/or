@@ -175,7 +175,6 @@ def main():
              (3, 7), (6, 7),
              (0, 8), (7, 8)]
     
-    
     # Instantiate the data problem.
     data = DataProblem(num_vehicles, locations_in_block_unit)
 
