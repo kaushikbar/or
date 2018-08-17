@@ -1,2 +1,1 @@
-Built on top of and adapted from code examples provided by Google OR Tools (https://developers.google.com/optimization/routing).
-Licensed under the Creative Commons Attribution 3.0 License (https://creativecommons.org/licenses/by/3.0/), and code samples are licensed under the Apache 2.0 License. 
+Built on top of and adapted from code examples provided by Google OR Tools (https://developers.google.com/optimization/routing). Licensed under the Creative Commons Attribution 3.0 License (https://creativecommons.org/licenses/by/3.0/), and code samples are licensed under the Apache 2.0 License. 
